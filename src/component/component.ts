@@ -44,6 +44,13 @@ interface MountOptions {
   position?: MountPosition;
 }
 
+export const enum STATUS {
+  CREATED,
+  RENDERED,
+  MOUNTED,
+  DESTROYED,
+}
+
 /**
  * This is mostly an internal detail of implementation. The Meta interface is
  * useful to typecheck and describe the internal keys used by Owl to manage the
@@ -56,8 +63,7 @@ interface Internal<T extends Env> {
   depth: number;
   vnode: VNode | null;
   pvnode: VNode | null;
-  isMounted: boolean;
-  isDestroyed: boolean;
+  status: STATUS;
 
   // parent and children keys are obviously useful to setup the parent-children
   // relationship.
@@ -164,16 +170,18 @@ export class Component<Props extends {} = any, T extends Env = Env> {
         this.env.browser = browser;
       }
       this.env.qweb.on("update", this, () => {
-        if (this.__owl__.isMounted) {
-          this.render(true);
-        }
-        if (this.__owl__.isDestroyed) {
-          // this is unlikely to happen, but if a root widget is destroyed,
-          // we want to remove our subscription.  The usual way to do that
-          // would be to perform some check in the destroy method, but since
-          // it is very performance sensitive, and since this is a rare event,
-          // we simply do it lazily
-          this.env.qweb.off("update", this);
+        switch (this.__owl__.status) {
+          case STATUS.MOUNTED:
+            this.render(true);
+            break;
+          case STATUS.DESTROYED:
+            // this is unlikely to happen, but if a root widget is destroyed,
+            // we want to remove our subscription.  The usual way to do that
+            // would be to perform some check in the destroy method, but since
+            // it is very performance sensitive, and since this is a rare event,
+            // we simply do it lazily
+            this.env.qweb.off("update", this);
+            break;
         }
       });
       depth = 0;
@@ -186,8 +194,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
       depth: depth,
       vnode: null,
       pvnode: null,
-      isMounted: false,
-      isDestroyed: false,
+      status: 0,
       parent: parent || null,
       children: {},
       cmap: {},
@@ -319,18 +326,20 @@ export class Component<Props extends {} = any, T extends Env = Env> {
   async mount(target: HTMLElement | DocumentFragment, options: MountOptions = {}): Promise<void> {
     const position = options.position || "last-child";
     const __owl__ = this.__owl__;
-    if (__owl__.isMounted) {
-      if (position !== "self" && this.el!.parentNode !== target) {
-        // in this situation, we are trying to mount a component on a different
-        // target. In this case, we need to unmount first, otherwise it will
-        // not work.
-        this.unmount();
-      } else {
-        return Promise.resolve();
-      }
-    }
-    if (__owl__.isDestroyed) {
-      throw new Error("Cannot mount a destroyed component");
+    switch (__owl__.status) {
+      case STATUS.MOUNTED:
+        if (position !== "self" && this.el!.parentNode !== target) {
+          // in this situation, we are trying to mount a component on a different
+          // target. In this case, we need to unmount first, otherwise it will
+          // not work.
+          this.unmount();
+        } else {
+          return Promise.resolve();
+        }
+        break;
+      case STATUS.DESTROYED:
+        throw new Error("Cannot mount a destroyed component");
+        break;
     }
     if (__owl__.currentFiber) {
       const currentFiber = __owl__.currentFiber;
@@ -367,7 +376,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
    * to call willUnmount calls and remove the component from the DOM.
    */
   unmount() {
-    if (this.__owl__.isMounted) {
+    if (this.__owl__.status == STATUS.MOUNTED) {
       this.__callWillUnmount();
       this.el!.remove();
     }
@@ -394,10 +403,10 @@ export class Component<Props extends {} = any, T extends Env = Env> {
     // if we aren't mounted at this point, it implies that there is a
     // currentFiber that is already rendered (isRendered is true), so we are
     // about to be mounted
-    const isMounted = __owl__.isMounted;
+    const status = __owl__.status;
     const fiber = new Fiber(null, this, force, null, null);
     Promise.resolve().then(() => {
-      if (__owl__.isMounted || !isMounted) {
+      if (__owl__.status === STATUS.MOUNTED || status !== STATUS.MOUNTED) {
         if (fiber.isCompleted) {
           return;
         }
@@ -424,7 +433,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
    */
   destroy() {
     const __owl__ = this.__owl__;
-    if (!__owl__.isDestroyed) {
+    if (__owl__.status !== STATUS.DESTROYED) {
       const el = this.el;
       this.__destroy(__owl__.parent);
       if (el) {
@@ -469,13 +478,12 @@ export class Component<Props extends {} = any, T extends Env = Env> {
    */
   __destroy(parent: Component | null) {
     const __owl__ = this.__owl__;
-    const isMounted = __owl__.isMounted;
-    if (isMounted) {
+    if (__owl__.status === STATUS.MOUNTED) {
       if (__owl__.willUnmountCB) {
         __owl__.willUnmountCB();
       }
       this.willUnmount();
-      __owl__.isMounted = false;
+      __owl__.status = STATUS.RENDERED;
     }
     const children = __owl__.children;
     for (let key in children) {
@@ -486,7 +494,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
       delete parent.__owl__.children[id];
       __owl__.parent = null;
     }
-    __owl__.isDestroyed = true;
+    __owl__.status = STATUS.DESTROYED;
     delete __owl__.vnode;
     if (__owl__.currentFiber) {
       __owl__.currentFiber.isCompleted = true;
@@ -496,7 +504,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
   __callMounted() {
     const __owl__ = this.__owl__;
 
-    __owl__.isMounted = true;
+    __owl__.status = STATUS.MOUNTED;
     __owl__.currentFiber = null;
     this.mounted();
     if (__owl__.mountedCB) {
@@ -510,7 +518,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
       __owl__.willUnmountCB();
     }
     this.willUnmount();
-    __owl__.isMounted = false;
+    __owl__.status = STATUS.RENDERED;
     if (__owl__.currentFiber) {
       __owl__.currentFiber.isCompleted = true;
       __owl__.currentFiber.root.counter = 0;
@@ -518,7 +526,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
     const children = __owl__.children;
     for (let id in children) {
       const comp = children[id];
-      if (comp.__owl__.isMounted) {
+      if (comp.__owl__.status === STATUS.MOUNTED) {
         comp.__callWillUnmount();
       }
     }
@@ -639,6 +647,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
     }
     return p._template;
   }
+
   async __prepareAndRender(fiber: Fiber, cb: CallableFunction) {
     try {
       await Promise.all([this.willStart(), this.__owl__.willStartCB && this.__owl__.willStartCB()]);
@@ -646,7 +655,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
       fiber.handleError(e);
       return Promise.resolve();
     }
-    if (this.__owl__.isDestroyed) {
+    if (this.__owl__.status === STATUS.DESTROYED) {
       return Promise.resolve();
     }
     if (!fiber.isCompleted) {
@@ -673,7 +682,7 @@ export class Component<Props extends {} = any, T extends Env = Env> {
       for (let childKey in __owl__.children) {
         const child = __owl__.children[childKey];
         const childOwl = child.__owl__;
-        if (!childOwl.isMounted && childOwl.parentLastFiberId < fiber.id) {
+        if (childOwl.status !== STATUS.MOUNTED && childOwl.parentLastFiberId < fiber.id) {
           // we only do here a "soft" destroy, meaning that we leave the child
           // dom node alone, without removing it.  Most of the time, it does not
           // matter, because the child component is already unmounted.  However,
@@ -717,17 +726,6 @@ export class Component<Props extends {} = any, T extends Env = Env> {
     fiber.isRendered = true;
     if (error) {
       fiber.handleError(error);
-    }
-  }
-
-  /**
-   * Only called by qweb t-component directive (when t-keepalive is set)
-   */
-  __remount() {
-    const __owl__ = this.__owl__;
-    if (!__owl__.isMounted) {
-      __owl__.isMounted = true;
-      this.mounted();
     }
   }
 
