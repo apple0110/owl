@@ -347,10 +347,9 @@ export class Component<Props extends {} = any, T extends Env = Env> {
         // this means we have a pending rendering, but it was a render operation,
         // not a mount operation. We can simply update the fiber with the target
         // and the position
-        currentFiber.target = target;
-        currentFiber.position = position;
-        return scheduler.addFiber(currentFiber);
+        currentFiber.cancel()
       } else if (currentFiber.target === target && currentFiber.position === position) {
+        // console.warn('c')
         return scheduler.addFiber(currentFiber);
       } else {
         scheduler.rejectFiber(currentFiber, "Mounting operation cancelled");
